@@ -3,9 +3,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Chart, COLORS } from './Chart';
 import { buildFlow, type FLink, type FNode } from './lib/flow';
 import { yoyOf, type Company, type Period } from './lib/normalize';
-import { loadCompany, loadEarnings, loadIndex, loadTickers, settings, type EpsRow, type IndexEntry, type TickerRow } from './lib/data';
+import { loadCompany, loadEarnings, loadIndex, loadTickers, loadUniverse, myList, searchRows, settings, squash, STATUS_TEXT, type EpsRow, type IndexEntry, type TickerRow, type Universe } from './lib/data';
+import { ST } from './lib/compact';
 import { GLOSSARY } from './lib/glossary';
-import { change, money, pct } from './lib/format';
+import { change, money, pct, setCurrency } from './lib/format';
 
 const fpLabel = (p: Period) => (p.fp === 'FY' ? `FY${p.fy}` : `${p.fp} FY${p.fy}`);
 const filingUrl = (c: Company, p: Period) => `https://www.sec.gov/Archives/edgar/data/${c.cik}/${p.accn.replace(/-/g, '')}/${p.accn}-index.htm`;
@@ -14,6 +15,8 @@ export default function App() {
   const [index, setIndex] = useState<IndexEntry[]>([]);
   const [updated, setUpdated] = useState('');
   const [tickers, setTickers] = useState<TickerRow[]>([]);
+  const [uni, setUni] = useState<Universe | null | undefined>(undefined);
+  const [list, setList] = useState<string[]>(() => myList.get());
   const [q, setQ] = useState('');
   const [focus, setFocus] = useState(false);
   const [ticker, setTicker] = useState(() => new URLSearchParams(location.search).get('t')?.toUpperCase() || localStorage.getItem('ef.last') || '');
@@ -30,20 +33,27 @@ export default function App() {
   const [eps, setEps] = useState<EpsRow[] | null>(null);
   const [epsErr, setEpsErr] = useState('');
 
-  useEffect(() => { loadIndex().then(i => { setIndex(i.companies); setUpdated(i.updated); }); loadTickers().then(setTickers); }, []);
+  useEffect(() => { loadIndex().then(i => { setIndex(i.companies); setUpdated(i.updated); }); loadTickers().then(setTickers).catch(() => setTickers([])); loadUniverse().then(setUni); }, []);
+  useEffect(() => { myList.set(list); }, [list]);
   useEffect(() => { localStorage.setItem('ef.pro', pro ? '1' : '0'); }, [pro]);
   useEffect(() => {
-    if (!ticker || !tickers.length) return;
+    if (!ticker || uni === undefined || !index.length) return;
+    const urow = uni?.rows.find(r => r[0] === ticker) ?? uni?.rows.find(r => squash(r[0]) === squash(ticker));
     const row = tickers.find(t => t[0] === ticker);
     const bundled = index.some(c => c.ticker === ticker);
     setLoading(true); setErr(''); setCompany(null); setSel(null); setEps(null); setEpsErr('');
-    loadCompany(ticker, row?.[1], bundled)
-      .then(r => { setCompany(r.company); setVia(r.via); localStorage.setItem('ef.last', ticker); setPkey(''); })
+    loadCompany(ticker, row?.[1] ?? urow?.[3], bundled, urow)
+      .then(r => {
+        setCompany(r.company); setVia(r.via); localStorage.setItem('ef.last', ticker); setPkey('');
+        setMode(r.company.periods.some(p => p.fp !== 'FY' && p.items.revenue) ? 'Q' : 'FY');
+      })
       .catch(e => setErr(e.message))
       .finally(() => setLoading(false));
     loadEarnings(ticker).then(setEps).catch(e => setEpsErr(e.message));
-  }, [ticker, tickers, index]);
+  }, [ticker, tickers, index, uni]);
 
+  setCurrency(company?.currency);
+  const hasQ = !!company?.periods.some(p => p.fp !== 'FY' && p.items.revenue);
   const periods = useMemo(() => (company?.periods ?? []).filter(p => (mode === 'FY' ? p.fp === 'FY' : p.fp !== 'FY') && p.items.revenue).slice().reverse(), [company, mode]);
   const period = periods.find(p => p.key === pkey) ?? periods[0];
   const prev = company && period ? yoyOf(company, period) : undefined;
@@ -60,10 +70,11 @@ export default function App() {
   const results = useMemo(() => {
     const s = q.trim().toUpperCase(); if (!s) return [];
     const bundled = new Set(index.map(i => i.ticker));
+    if (uni) return searchRows(uni.rows, q, new Set([...bundled, ...list])).map(r => ({ t: [r[0], r[3], r[1]] as TickerRow, bundled: bundled.has(r[0]), u: r }));
     return tickers.filter(t => t[0].startsWith(s) || t[2].toUpperCase().includes(s))
       .sort((a, b) => (+(b[0] === s) - +(a[0] === s)) || (+b[0].startsWith(s) - +a[0].startsWith(s)) || (+bundled.has(b[0]) - +bundled.has(a[0])) || a[0].length - b[0].length).slice(0, 8)
-      .map(t => ({ t, bundled: bundled.has(t[0]) }));
-  }, [q, tickers, index]);
+      .map(t => ({ t, bundled: bundled.has(t[0]), u: undefined }));
+  }, [q, tickers, index, uni, list]);
   const pick = (t: string) => { setTicker(t); setQ(''); setFocus(false); history.replaceState(null, '', '?t=' + t); };
 
   const selNode: FNode | undefined = sel ? [...(flow?.nodes ?? []), ...(flow?.below ?? [])].find(n => n.id === (sel.kind === 'node' ? sel.id : sel.link!.target)) : undefined;
@@ -84,8 +95,10 @@ export default function App() {
           onKeyDown={e => { if (e.key === 'Enter' && results[0]) pick(results[0].t[0]); }} />
         {focus && results.length > 0 && (
           <ul className="results">
-            {results.map(({ t, bundled }) => (
-              <li key={t[0]} onMouseDown={() => pick(t[0])}><b>{t[0]}</b><span>{t[2]}</span>{bundled ? <em>ready</em> : <em className="muted">{settings.workerUrl ? 'live' : 'proxy needed'}</em>}</li>
+            {results.map(({ t, bundled, u }) => (
+              <li key={t[0]} onMouseDown={() => pick(t[0])}><b>{t[0]}</b><span>{t[2]}{u && <small> · {u[2]}</small>}</span>
+                {u ? (u[4] === ST.chart ? <em>chart</em> : <em className="muted">{u[4] === ST.noRevenue ? 'no revenue' : 'not available'}</em>)
+                  : bundled ? <em>ready</em> : <em className="muted">{settings.workerUrl ? 'live' : 'proxy needed'}</em>}</li>
             ))}
           </ul>
         )}
@@ -93,17 +106,28 @@ export default function App() {
 
       {!ticker && (
         <section className="home">
-          <h1>Good to see you, Chairman.</h1>
-          <p>See where every dollar of a company's revenue goes, straight from its SEC filings.</p>
+          <h1>Where does the money go?</h1>
+          <p>See where every dollar of a company's revenue goes, straight from its SEC filings. Search {uni ? `${uni.rows.length.toLocaleString()} US-listed stocks` : 'any ticker'} above.</p>
+          {list.length > 0 && <><h4 className="listh">My list</h4><div className="chips mine">{list.map(t => <button key={t} onClick={() => pick(t)}>{t}</button>)}</div></>}
+          <h4 className="listh">Popular</h4>
           <div className="chips">{index.map(c => <button key={c.ticker} onClick={() => pick(c.ticker)}>{c.ticker}</button>)}</div>
-          <p className="fine">Bundled data refreshed {updated ? new Date(updated).toLocaleDateString() : '…'} from SEC EDGAR.</p>
+          <p className="fine">{uni ? <>Data for {(uni.stats?.chart ?? 0).toLocaleString()} companies refreshed {new Date(uni.updated).toLocaleDateString()} from SEC EDGAR; each opens offline after you view it once.</> : <>Bundled data refreshed {updated ? new Date(updated).toLocaleDateString() : '…'} from SEC EDGAR.</>}</p>
         </section>
       )}
 
       {loading && <div className="card center">Loading {ticker}…</div>}
       {err && <div className="card warn">{err === 'NOPROXY'
-        ? <>{ticker} is not in the bundled starter list. To load any SEC filer live, add a data proxy URL in <a onClick={() => setShowSettings(true)}>Settings</a>.</>
+        ? <>{ticker} isn't a US exchange-listed company in SEC's ticker list, so no data is available. To load any SEC filer live, add a data proxy URL in <a onClick={() => setShowSettings(true)}>Settings</a>.</>
+        : err.startsWith('STATUS:') ? <><b>Not available.</b> {uni?.rows.find(r => r[0] === ticker)?.[1] ?? ticker} {STATUS_TEXT[+err.slice(7)]}</>
+        : err === 'OFFLINE' ? <>You're offline and {ticker} hasn't been opened on this device yet. Connect once and it will be saved for offline use.</>
         : err}</div>}
+
+      {company && !period && !loading && (
+        <section className="card warn">
+          <b>Not available.</b> {company.name} {STATUS_TEXT[ST.noRevenue]}
+          {(() => { const p = company.periods.filter(p => p.items.netIncome).at(-1); return p ? <p className="fine">Latest reported net {p.items.netIncome!.v < 0 ? 'loss' : 'income'}: <b>{money(p.items.netIncome!.v)}</b> ({fpLabel(p)}, ended {p.end}, <a href={filingUrl(company, p)} target="_blank" rel="noreferrer">SEC {p.form}</a>).</p> : null; })()}
+        </section>
+      )}
 
       {company && period && (
         <>
@@ -111,12 +135,14 @@ export default function App() {
             <div>
               <div className="eyebrow">INCOME FLOW</div>
               <h2>{company.name}</h2>
-              <div className="meta">{company.ticker} · {fpLabel(period)} · {period.fp === 'FY' ? 'Year' : 'Quarter'} ended {period.end} · USD · GAAP</div>
+              <div className="meta">{company.ticker} · {fpLabel(period)} · {period.fp === 'FY' ? 'Year' : 'Quarter'} ended {period.end} · {company.currency ?? 'USD'} · {company.gaap ?? 'US GAAP'}</div>
             </div>
+            <button className={'add' + (list.includes(company.ticker) ? ' on' : '')} onClick={() => setList(l => l.includes(company.ticker) ? l.filter(x => x !== company.ticker) : [...l, company.ticker])}>
+              {list.includes(company.ticker) ? '✓ In my list' : '+ Add to my list'}</button>
           </section>
           <section className="controls">
             <div className="seg">
-              <button className={mode === 'Q' ? 'on' : ''} onClick={() => { setMode('Q'); setPkey(''); }}>Quarter</button>
+              <button className={mode === 'Q' ? 'on' : ''} disabled={!hasQ} onClick={() => { setMode('Q'); setPkey(''); }}>Quarter</button>
               <button className={mode === 'FY' ? 'on' : ''} onClick={() => { setMode('FY'); setPkey(''); }}>Fiscal year</button>
             </div>
             <select value={period.key} onChange={e => { setPkey(e.target.value); setSel(null); }} aria-label="Period">
@@ -129,6 +155,9 @@ export default function App() {
             </div>
           </section>
 
+          {!hasQ && <div className="card fine">Only annual figures are available: {company.gaap === 'IFRS' || /^(20|40)-F/.test(period.form) ? 'foreign companies file annual reports (20-F/40-F) with the SEC, and their quarterly updates are not in SEC\'s structured data.' : 'quarterly figures are not in SEC\'s structured data for this company.'}{company.currency && company.currency !== 'USD' ? ` Amounts are in ${company.currency}, the company's reporting currency.` : ''}</div>}
+          {hasQ && company.currency && company.currency !== 'USD' && <div className="card fine">Amounts are in {company.currency}, the company's reporting currency.</div>}
+          {Date.parse(period.end) < Date.now() - 548 * 864e5 && <div className="card warn">The latest figures SEC has in structured form are from {period.end}; newer reports may not be available yet.</div>}
           {yoy && !prev && <div className="card fine">No same-period data from one year earlier.</div>}
           {yoy && prev && <div className="yoynote">Compared with {fpLabel(prev)} (ended {prev.end}). <span className="up">▲▼ green</span> = better for the company, <span className="down">red</span> = worse.</div>}
 
@@ -144,7 +173,7 @@ export default function App() {
             <div className="source">
               Source: <a href={filingUrl(company, period)} target="_blank" rel="noreferrer">SEC {period.form} filed {period.filed}</a>
               {period.fp === 'Q4' && ' · Q4 derived as full year minus Q1–Q3'}
-              {via === 'worker' ? ' · live via proxy' : ` · bundled data (${company.updated})`}
+              {via === 'worker' ? ' · live via proxy' : via === 'universe' ? ` · weekly SEC data (${company.updated})` : ` · bundled data (${company.updated})`}
             </div>
             {flow?.notes.map((n, i) => <p key={i} className="fine">{n}</p>)}
             <p className="fine">Revenue segments aren't shown: SEC's XBRL company facts don't include segment breakdowns, so the chart starts at total revenue. Amounts marked "derived" are simple arithmetic on reported figures. A just-announced quarter appears here once its 10-Q/10-K is filed with the SEC.</p>
@@ -250,7 +279,7 @@ function Settings({ onClose }: { onClose: () => void }) {
         </label>
         <label className="field">Data proxy URL (Cloudflare Worker)
           <input value={w} onChange={e => setW(e.target.value)} placeholder="https://earnings-flow-proxy.<you>.workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
-          <small>Optional. Leave blank to use the bundled starter data. With a proxy, any SEC filer loads live.</small>
+          <small>Optional. All US-listed stocks already load from weekly data; a proxy loads the very latest filing live.</small>
         </label>
         <button className="primary" onClick={() => { settings.finnhub = k; settings.workerUrl = w; location.reload(); }}>Save</button>
       </div>

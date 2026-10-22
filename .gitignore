@@ -4,3 +4,8 @@ dist
 .DS_Store
 .wrangler
 test-results
+companyfacts.zip
+datastore
+public/data/c
+public/data/universe.json
+public/data/universe-stats.json

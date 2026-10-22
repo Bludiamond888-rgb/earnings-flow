@@ -9,6 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # overlay the weekly full-universe data set from the `data` branch; main keeps the 30 starter tickers as a fallback
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with: { ref: data, path: datastore }
+      - name: Overlay data
+        run: |
+          if [ -f datastore/universe.json ]; then cp datastore/universe.json datastore/universe-stats.json public/data/ && cp -r datastore/c public/data/c; fi
+          ls public/data | wc -l; ls public/data/c 2>/dev/null | wc -l
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci

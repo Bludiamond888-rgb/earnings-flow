@@ -79,3 +79,10 @@ button { cursor:pointer; font-family:inherit; }
 .items td { padding:9px 8px; border-top:1px solid #f1f5f9; } .items tr { cursor:pointer; } .items tr:hover { background:#f8fafc; }
 .items td.n { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; } .items .dot { display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:8px; }
 .items td.m { color:var(--mut); font-size:12.5px; }
+.head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.add { flex:none; margin-top:18px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; font-size:13px; padding:8px 12px; border-radius:99px; }
+.add.on { background:#dcfce7; border-color:#bbf7d0; color:var(--up); }
+.listh { margin:14px 0 8px; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); }
+.chips.mine button { border-color:#bfdbfe; background:#eff6ff; }
+.results small { font-size:12px; opacity:.8; }
+.seg button:disabled { opacity:.4; }

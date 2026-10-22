@@ -3,21 +3,56 @@ on:
   schedule: [{ cron: '17 11 * * 1' }]  # Mondays 11:17 UTC
   workflow_dispatch:
 permissions: { contents: write, pages: write, id-token: write, actions: write }
+concurrency: { group: data-refresh, cancel-in-progress: false }
+env: { SEC_USER_AGENT: 'EarningsFlow/1.0 Jackie Lin jackie@localhost' }
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      # last good full-universe data set lives on the `data` branch (single force-pushed commit, so history doesn't grow)
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with: { ref: data, path: datastore }
+      - run: mkdir -p datastore && rm -rf datastore/.git
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci
-      - run: npm run refresh-data
-        env: { SEC_USER_AGENT: 'EarningsFlow/1.0 Jackie Lin jackie@localhost' }
-      - name: Commit if changed and redeploy
-        env: { GH_TOKEN: '${{ github.token }}' }
+      - name: Starter 30 tickers (bundled fallback on main)
+        id: starter
+        continue-on-error: true
+        run: npm run refresh-data
+      - name: Commit starter data if changed
+        if: steps.starter.outcome == 'success'
         run: |
-          if git diff --quiet -- public/data; then echo "No data changes"; exit 0; fi
+          if git diff --quiet -- public/data; then echo "No starter data changes"; exit 0; fi
           git config user.name 'Jackie Lin'; git config user.email jackie@localhost
           git add public/data && git commit -m "Weekly SEC data refresh" && git push
-          # pushes made with GITHUB_TOKEN don't trigger other workflows, so dispatch Pages explicitly
-          gh workflow run pages.yml --ref main
+      - name: Download SEC bulk companyfacts.zip
+        run: |
+          curl -sS --fail --retry 4 --retry-delay 20 -A "$SEC_USER_AGENT" -H 'Accept-Encoding: gzip, deflate' -o companyfacts.zip \
+            https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip
+          ls -la companyfacts.zip && unzip -tq companyfacts.zip | tail -1
+      - name: Full US-listed universe (refuses to shrink > 30%)
+        run: npm run build-universe -- --zip companyfacts.zip
+        env: { DATA_DIR: datastore, MIN_CHART: '2500' }
+      - name: Test
+        run: npm test
+      - name: Summary
+        run: |
+          echo "### Universe" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY; cat datastore/universe-stats.json >> $GITHUB_STEP_SUMMARY; echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Publish data branch
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          cd datastore
+          git init -q -b data && git config user.name 'Jackie Lin' && git config user.email jackie@localhost
+          git add -A && git commit -qm "Data refresh $(date -u +%F)"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+      # pushes made with GITHUB_TOKEN don't trigger other workflows, so dispatch Pages explicitly (also after a failed
+      # universe run, so a starter update still ships; Pages then uses the last good data branch)
+      - name: Redeploy Pages
+        if: always()
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: gh workflow run pages.yml --ref main

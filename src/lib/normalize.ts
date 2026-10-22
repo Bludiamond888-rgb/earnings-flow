@@ -12,12 +12,12 @@ export type Period = {
   form: string; filed: string; accn: string;
   items: Partial<Record<ItemKey, Item>>;
 };
-export type Company = { ticker: string; name: string; cik: number; updated: string; periods: Period[] };
+export type Company = { ticker: string; name: string; cik: number; updated: string; periods: Period[]; currency?: string; gaap?: 'US GAAP' | 'IFRS' };
 
 type Fact = { start?: string; end: string; val: number; accn: string; fy: number; fp: string; form: string; filed: string; frame?: string };
 
 export const TAGS: Record<Exclude<ItemKey, 'grossProfit'> | 'grossProfit', string[]> = {
-  revenue: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'RevenuesNetOfInterestExpense', 'SalesRevenueGoodsNet'],
+  revenue: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'RevenuesNetOfInterestExpense', 'SalesRevenueGoodsNet', 'GrossInvestmentIncomeOperating'],
   cogs: ['CostOfRevenue', 'CostOfGoodsAndServicesSold', 'CostOfGoodsSold', 'CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization', 'CostOfServices'],
   grossProfit: ['GrossProfit'],
   rd: ['ResearchAndDevelopmentExpense', 'ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost', 'TechnologyAndDevelopmentExpense'],
@@ -33,19 +33,36 @@ export const TAGS: Record<Exclude<ItemKey, 'grossProfit'> | 'grossProfit', strin
   nonInterestExpense: ['NoninterestExpense'],
   provision: ['ProvisionForLoanLeaseAndOtherLosses', 'ProvisionForLoanAndLeaseLosses', 'ProvisionForCreditLossesNet'],
 };
-const EXTRA = ['SellingAndMarketingExpense', 'GeneralAndAdministrativeExpense', 'MarketingAndAdvertisingExpense'];
+const EXTRA = ['SellingAndMarketingExpense', 'GeneralAndAdministrativeExpense', 'MarketingAndAdvertisingExpense', 'InterestIncomeExpenseNet', 'NoninterestIncome', 'InterestAndDividendIncomeOperating', 'BenefitsLossesAndExpenses'];
+/** IFRS (foreign private issuers filing 20-F/40-F). Mostly annual only; amounts in the reporting currency. */
+export const IFRS_TAGS: Partial<Record<ItemKey, string[]>> = {
+  revenue: ['Revenue', 'RevenueFromContractsWithCustomers', 'RevenueAndOperatingIncome'],
+  cogs: ['CostOfSales'],
+  grossProfit: ['GrossProfit'],
+  rd: ['ResearchAndDevelopmentExpense'],
+  sga: ['SellingGeneralAndAdministrativeExpense'],
+  opIncome: ['ProfitLossFromOperatingActivities'],
+  interestExpense: ['FinanceCosts'],
+  interestIncome: ['FinanceIncome'],
+  pretax: ['ProfitLossBeforeTax'],
+  tax: ['IncomeTaxExpenseContinuingOperations'],
+  netIncome: ['ProfitLossAttributableToOwnersOfParent', 'ProfitLoss'],
+  eps: ['DilutedEarningsLossPerShare', 'BasicEarningsLossPerShare', 'BasicAndDilutedEarningsLossPerShare'],
+};
+const IFRS_EXTRA = ['DistributionCosts', 'SellingExpense', 'AdministrativeExpense', 'InterestRevenueExpense'];
 
 const days = (s: string, e: string) => (Date.parse(e) - Date.parse(s)) / 864e5;
 const isQ = (f: Fact) => f.start && days(f.start, f.end) >= 80 && days(f.start, f.end) <= 100;
 const isFY = (f: Fact) => f.start && days(f.start, f.end) >= 350 && days(f.start, f.end) <= 380;
-const okForm = (f: Fact) => /^10-[QK]/.test(f.form);
+const okForm = (f: Fact) => /^(10-[QK]|20-F|40-F)/.test(f.form);
+const isAnnualForm = (form: string) => /^(10-K|20-F|40-F)/.test(form);
 
 /** Map "start|end" -> latest-filed fact for one tag (10-Q/10-K only). */
-function byPeriod(facts: any, tag: string): Map<string, Fact> {
+function byPeriod(facts: any, ns: string, tag: string, cur: string): Map<string, Fact> {
   const m = new Map<string, Fact>();
-  const units = facts?.['us-gaap']?.[tag]?.units;
+  const units = facts?.[ns]?.[tag]?.units;
   if (!units) return m;
-  const arr: Fact[] = units.USD ?? units['USD/shares'] ?? [];
+  const arr: Fact[] = units[cur] ?? units[cur + '/shares'] ?? [];
   for (const f of arr) {
     if (!f.start || !okForm(f)) continue;
     const k = f.start + '|' + f.end;
@@ -55,20 +72,41 @@ function byPeriod(facts: any, tag: string): Map<string, Fact> {
   return m;
 }
 
+/** Count recent filing facts for the headline tags of a taxonomy, per currency unit. */
+function scoreUnits(facts: any, ns: string, tags: readonly string[]): Map<string, number> {
+  const sc = new Map<string, number>();
+  for (const t of tags) for (const [u, arr] of Object.entries<any>(facts?.[ns]?.[t]?.units ?? {})) {
+    if (u.includes('/')) continue;
+    const n = (arr as Fact[]).filter(f => f.start && okForm(f) && f.end >= '2019').length;
+    if (n) sc.set(u, (sc.get(u) ?? 0) + n);
+  }
+  return sc;
+}
+/** Pick the taxonomy (us-gaap vs IFRS) and reporting currency with the most recent 10-K/10-Q/20-F/40-F facts. */
+export function chooseBasis(facts: any): { ns: 'us-gaap' | 'ifrs-full'; cur: string } | null {
+  let best: { ns: 'us-gaap' | 'ifrs-full'; cur: string; n: number } | null = null;
+  for (const [ns, tags] of [['us-gaap', [...TAGS.revenue, ...TAGS.netIncome]], ['ifrs-full', [...IFRS_TAGS.revenue!, ...IFRS_TAGS.netIncome!]]] as const)
+    for (const [cur, n] of scoreUnits(facts, ns, tags)) if (!best || n > best.n) best = { ns, cur, n };
+  return best && { ns: best.ns, cur: best.cur };
+}
+
 export function normalize(raw: any, ticker: string): Company {
-  const facts = raw.facts;
+  const facts = raw.facts ?? {};
+  const basis = chooseBasis(facts) ?? { ns: 'us-gaap' as const, cur: 'USD' };
+  const ifrs = basis.ns === 'ifrs-full';
+  const T: Record<string, string[]> = ifrs ? { ...Object.fromEntries(Object.keys(TAGS).map(k => [k, []])), ...IFRS_TAGS } : TAGS;
   const maps: Record<string, Map<string, Fact>> = {};
-  for (const t of [...Object.values(TAGS).flat(), ...EXTRA]) maps[t] = byPeriod(facts, t);
+  for (const t of [...Object.values(T).flat(), ...(ifrs ? IFRS_EXTRA : EXTRA)]) maps[t] = byPeriod(facts, basis.ns, t, basis.cur);
 
   // Period skeleton: any revenue or net income fact with quarterly/annual duration.
   const skel = new Map<string, Fact>();
-  for (const t of [...TAGS.revenue, ...TAGS.netIncome, ...TAGS.opIncome]) for (const [k, f] of maps[t]) {
+  for (const t of [...T.revenue, ...T.netIncome, ...T.opIncome, ...(ifrs ? [] : ['InterestIncomeExpenseNet'])]) for (const [k, f] of maps[t]) {
     if (!(isQ(f) || isFY(f))) continue;
     const p = skel.get(k); if (!p || f.filed > p.filed) skel.set(k, f);
   }
   const annual = [...skel.values()].filter(isFY).sort((a, b) => a.end.localeCompare(b.end));
   // drop overlapping annual windows (e.g. trailing 12m) - keep those ending ~yearly from the latest 10-K FY ends
-  const fyEnds = annual.filter(f => f.form.startsWith('10-K') && f.fp === 'FY').map(f => f.end);
+  const fyEnds = annual.filter(f => isAnnualForm(f.form) && f.fp === 'FY').map(f => f.end);
   let fyEndSet = [...new Set(fyEnds)].sort();
   if (!fyEndSet.length) {
     // No 10-K annual facts in companyfacts: infer fiscal year end from a Q1 10-Q fact (end + ~9 months), else Dec 31.
@@ -95,7 +133,7 @@ export function normalize(raw: any, ticker: string): Company {
   };
 
   const pick = (key: ItemKey, k: string): Item | undefined => {
-    for (const t of TAGS[key]) { const f = maps[t].get(k); if (f) return { v: f.val, tag: t }; }
+    for (const t of T[key] ?? []) { const f = maps[t].get(k); if (f) return { v: f.val, tag: t }; }
     return undefined;
   };
   const periods: Period[] = [];
@@ -108,15 +146,29 @@ export function normalize(raw: any, ticker: string): Company {
     const key = fp === 'FY' ? `FY${fy}` : `FY${fy}${fp}`;
     if (seen.has(key)) continue; seen.add(key);
     const items: Period['items'] = {};
-    for (const ik of Object.keys(TAGS) as ItemKey[]) { const it = pick(ik, k); if (it) items[ik] = it; }
+    for (const ik of Object.keys(T) as ItemKey[]) { const it = pick(ik, k); if (it) items[ik] = it; }
     // filing source = latest filing among the used facts
     let src = f;
-    for (const t of Object.values(TAGS).flat()) { const g = maps[t].get(k); if (g && g.accn === f.accn) { src = g; break; } }
+    for (const t of Object.values(T).flat()) { const g = maps[t].get(k); if (g && g.accn === f.accn) { src = g; break; } }
     periods.push({ key, fy, fp, start: f.start!, end: f.end, form: src.form, filed: src.filed, accn: src.accn, items });
   }
   // SG&A fallback: Selling & marketing + G&A
   for (const p of periods) {
     const k = p.start + '|' + p.end;
+    if (ifrs) {
+      const s = maps['DistributionCosts'].get(k) ?? maps['SellingExpense'].get(k), g = maps['AdministrativeExpense'].get(k);
+      if (!p.items.sga && s && g) p.items.sga = { v: s.val + g.val, tag: 'DistributionCosts + AdministrativeExpense', derived: true };
+      // banks: "revenue from contracts with customers" is only fee income, not total income -> don't chart it as revenue
+      if (p.items.revenue?.tag === 'RevenueFromContractsWithCustomers' && maps['InterestRevenueExpense'].get(k)) delete p.items.revenue;
+      continue;
+    }
+    // Banks often report no revenue total: net revenue = net interest income + non-interest income (standard bank presentation)
+    // (ASC 606 "revenue from contracts with customers" at a bank is only fee income, so it is replaced too)
+    const nii = maps['InterestIncomeExpenseNet'].get(k), non = maps['NoninterestIncome'].get(k);
+    if (nii && (!p.items.revenue || p.items.revenue.tag.startsWith('RevenueFromContract'))) {
+      if (non) p.items.revenue = { v: nii.val + non.val, tag: 'InterestIncomeExpenseNet + NoninterestIncome', derived: true };
+      else delete p.items.revenue;
+    }
     if (!p.items.sga) {
       const s = maps['SellingAndMarketingExpense'].get(k) ?? maps['MarketingAndAdvertisingExpense'].get(k), g = maps['GeneralAndAdministrativeExpense'].get(k);
       if (s && g) p.items.sga = { v: s.val + g.val, tag: 'SellingAndMarketingExpense + GeneralAndAdministrativeExpense', derived: true };
@@ -140,12 +192,13 @@ export function normalize(raw: any, ticker: string): Company {
   }
   for (const p of periods) {
     const it = p.items;
+    if (!it.revenue && it.cogs && it.grossProfit && it.cogs.v > 0) it.revenue = { v: it.cogs.v + it.grossProfit.v, tag: 'CostOfRevenue + GrossProfit', derived: true };
     if (!it.grossProfit && it.revenue && it.cogs) it.grossProfit = { v: it.revenue.v - it.cogs.v, tag: 'Revenue − CostOfRevenue', derived: true };
     if (!it.cogs && it.revenue && it.grossProfit) it.cogs = { v: it.revenue.v - it.grossProfit.v, tag: 'Revenue − GrossProfit', derived: true };
   }
   periods.sort((a, b) => a.end.localeCompare(b.end) || (a.fp === 'FY' ? 1 : -1));
   const kept = periods.filter(p => p.items.revenue || p.items.netIncome);
-  return { ticker: ticker.toUpperCase(), name: raw.entityName, cik: raw.cik, updated: new Date().toISOString().slice(0, 10), periods: kept };
+  return { ticker: ticker.toUpperCase(), name: raw.entityName, cik: raw.cik, updated: new Date().toISOString().slice(0, 10), periods: kept, currency: basis.cur, gaap: ifrs ? 'IFRS' : 'US GAAP' };
 }
 function dayAfter(d: string) { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + 1); return x.toISOString().slice(0, 10); }
 
