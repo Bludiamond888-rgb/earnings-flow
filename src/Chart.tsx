@@ -40,7 +40,7 @@ export function Chart({ flow, revenue, pro, yoy, onPick, selected }: {
       .nodeWidth(compact ? 8 : 12)
       .nodePadding(compact ? 30 : 44)
       .nodeAlign((n: any) => n.targetLinks.length === 0 && n.id !== 'revenue' ? Math.max(0, Math.min(...n.sourceLinks.map((l: any) => l.target.depth)) - 1) : n.depth)
-      .nodeSort((a, b) => (RANK[a.kind] - RANK[b.kind]) || (b.value! - a.value!))
+      .nodeSort((a, b) => ((a.id === 'nonop' && a.kind === 'cost' ? 5 : RANK[a.kind]) - (b.id === 'nonop' && b.kind === 'cost' ? 5 : RANK[b.kind])) || (b.value! - a.value!))
       .linkSort((a: any, b: any) => (RANK[a.target.kind] - RANK[b.target.kind]) || (RANK[a.source.kind] - RANK[b.source.kind]))
       .extent([[pad.a0, pad.b0], [L - pad.a1, B - pad.b1]]);
     return gen({ nodes, links });
