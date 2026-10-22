@@ -1,0 +1,23 @@
+name: Weekly SEC data refresh
+on:
+  schedule: [{ cron: '17 11 * * 1' }]  # Mondays 11:17 UTC
+  workflow_dispatch:
+permissions: { contents: write, pages: write, id-token: write, actions: write }
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npm run refresh-data
+        env: { SEC_USER_AGENT: 'EarningsFlow/1.0 Jackie Lin jackie@localhost' }
+      - name: Commit if changed and redeploy
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          if git diff --quiet -- public/data; then echo "No data changes"; exit 0; fi
+          git config user.name 'Jackie Lin'; git config user.email jackie@localhost
+          git add public/data && git commit -m "Weekly SEC data refresh" && git push
+          # pushes made with GITHUB_TOKEN don't trigger other workflows, so dispatch Pages explicitly
+          gh workflow run pages.yml --ref main

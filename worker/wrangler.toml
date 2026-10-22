@@ -1,0 +1,3 @@
+name = "earnings-flow-proxy"
+main = "src.js"
+compatibility_date = "2026-10-01"

@@ -1,0 +1,22 @@
+import { webkit, devices } from 'playwright';
+const B = process.env.URL || 'http://localhost:4173/';
+const b = await webkit.launch();
+const ip = await b.newContext({ ...devices['iPhone 15 Pro'] });
+const p = await ip.newPage();
+await p.goto(B); await p.waitForTimeout(800);
+await p.fill('.search input', 'TSLA'); await p.waitForTimeout(400);
+await p.screenshot({ path: 'screens/01-search.png' });
+await p.click('.results li:has-text("TSLA")'); await p.waitForSelector('.chartwrap svg'); await p.waitForTimeout(600);
+await p.screenshot({ path: 'screens/02-tsla-chart.png', fullPage: true });
+await p.locator('.node').filter({ hasText: 'Gross profit' }).locator('rect').first().click({ force: true }); await p.waitForTimeout(500);
+await p.screenshot({ path: 'screens/03-details.png' });
+await p.click('.close'); await p.check('.toggle input'); await p.click('.seg.small button:last-child'); await p.waitForTimeout(500);
+await p.screenshot({ path: 'screens/04-yoy-pro.png', fullPage: true });
+const land = await b.newContext({ ...devices['iPhone 15 Pro landscape'] });
+const pl = await land.newPage(); await pl.goto(B + '?t=TSLA'); await pl.waitForSelector('.chartwrap svg'); await pl.waitForTimeout(600);
+await pl.screenshot({ path: 'screens/05-landscape.png' });
+const d = await b.newContext({ viewport: { width: 1360, height: 900 } });
+const pd = await d.newPage(); await pd.goto(B + '?t=TSLA'); await pd.waitForSelector('.chartwrap svg'); await pd.waitForTimeout(600);
+await pd.screenshot({ path: 'screens/06-desktop.png', fullPage: true });
+for (const t of ['JPM','INTC']) { await pd.goto(B + '?t=' + t); await pd.waitForSelector('.chartwrap svg'); await pd.waitForTimeout(500); await pd.screenshot({ path: `screens/07-${t}.png` }); }
+await b.close();
