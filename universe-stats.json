@@ -1,0 +1,18 @@
+{
+ "updated": "2026-10-22T19:44:54.899Z",
+ "secRows": 10428,
+ "tickers": 6513,
+ "companies": 6049,
+ "chart": 4687,
+ "noRevenue": 753,
+ "noXbrl": 261,
+ "unsupported": 101,
+ "noReports": 247,
+ "ifrs": 526,
+ "nonUsd": 474,
+ "annualOnly": 1020,
+ "stale": 396,
+ "keptLastGood": 0,
+ "bytes": 34231967,
+ "seconds": 108
+}
